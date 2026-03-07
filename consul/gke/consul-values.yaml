@@ -1,0 +1,67 @@
+# =============================================================================
+# CONSUL HELM VALUES FOR GKE
+# =============================================================================
+# Install with: helm install consul hashicorp/consul -f consul-values.yaml -n consul --create-namespace
+# =============================================================================
+
+global:
+  name: consul
+  datacenter: gcp-asia-east2
+  
+  # TLS for secure communication
+  tls:
+    enabled: true
+    enableAutoEncrypt: true
+    verify: true
+  
+  # Gossip encryption
+  gossipEncryption:
+    autoGenerate: true
+  
+  # Federation for multi-datacenter
+  federation:
+    enabled: true
+    createFederationSecret: true
+  
+  # Mesh gateway for cross-cloud communication
+  meshGateway:
+    enabled: true
+    
+  # ACL for security
+  acls:
+    manageSystemACLs: true
+
+server:
+  replicas: 3
+  storage: 10Gi
+  storageClass: ssd-retain
+  
+  extraConfig: |
+    {
+      "connect": {
+        "enabled": true
+      }
+    }
+
+client:
+  enabled: true
+  grpc: true
+
+connectInject:
+  enabled: true
+  default: false  # Explicit opt-in for services
+  
+  # Transparent proxy
+  transparentProxy:
+    defaultEnabled: true
+
+controller:
+  enabled: true
+
+meshGateway:
+  enabled: true
+  replicas: 1
+  wanAddress:
+    source: Service
+  service:
+    type: LoadBalancer
