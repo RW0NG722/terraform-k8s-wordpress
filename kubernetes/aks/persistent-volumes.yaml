@@ -1,49 +1,46 @@
 # =============================================================================
-# CONSUL HELM VALUES FOR AKS
+# CONSUL HELM VALUES FOR GKE
 # =============================================================================
 # Install with: helm install consul hashicorp/consul -f consul-values.yaml -n consul --create-namespace
 # =============================================================================
 
 global:
   name: consul
-  datacenter: azure-eastasia
+  datacenter: gcp-asia-east2
   
+  # TLS for secure communication
   tls:
     enabled: true
     enableAutoEncrypt: true
     verify: true
-    caCert:
-      secretName: consul-federation  # From GCP
-      secretKey: caCert
-    caKey:
-      secretName: consul-federation
-      secretKey: caKey
   
+  # Gossip encryption
   gossipEncryption:
-    secretName: consul-federation
-    secretKey: gossipEncryptionKey
+    autoGenerate: true
   
+  # Federation for multi-datacenter
   federation:
     enabled: true
+    createFederationSecret: true
   
+  # Mesh gateway for cross-cloud communication
+  meshGateway:
+    enabled: true
+    
+  # ACL for security
   acls:
     manageSystemACLs: true
-    replicationToken:
-      secretName: consul-federation
-      secretKey: replicationToken
 
 server:
   replicas: 3
   storage: 10Gi
-  storageClass: azure-premium-retain
+  storageClass: ssd-retain
   
   extraConfig: |
     {
       "connect": {
         "enabled": true
-      },
-      "primary_datacenter": "gcp-asia-east2",
-      "retry_join_wan": ["<GCP_MESH_GATEWAY_IP>"]
+      }
     }
 
 client:
@@ -52,7 +49,9 @@ client:
 
 connectInject:
   enabled: true
-  default: false
+  default: false  # Explicit opt-in for services
+  
+  # Transparent proxy
   transparentProxy:
     defaultEnabled: true
 
