@@ -1,0 +1,30 @@
+# =============================================================================
+# CONSUL MESH GATEWAY SERVICE CONFIGURATION
+# =============================================================================
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ProxyDefaults
+metadata:
+  name: global
+spec:
+  meshGateway:
+    mode: local
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: wordpress
+  namespace: wordpress
+spec:
+  protocol: http
+  meshGateway:
+    mode: local
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: mysql
+  namespace: wordpress
+spec:
+  protocol: tcp
+  meshGateway:
+    mode: local

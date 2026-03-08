@@ -48,25 +48,13 @@ variable "network_name" {
 variable "machine_type" {
   description = "Machine type for GKE nodes"
   type        = string
-  default     = "e2-standard-2"
-  # CORRECTED: Changed from e2-medium (2 vCPU, 4GB) to e2-standard-2 (2 vCPU, 8GB)
-  # This matches the autoscaler requirement of max 8GB RAM
-  # 
-  # Available E2 machine types:
-  # - e2-micro:      0.25 vCPU, 1GB RAM
-  # - e2-small:      0.5 vCPU, 2GB RAM  
-  # - e2-medium:     2 vCPU, 4GB RAM
-  # - e2-standard-2: 2 vCPU, 8GB RAM  <-- SELECTED
-  # - e2-standard-4: 4 vCPU, 16GB RAM
-}
+  default     = "e2-medium"
+  
 
 variable "disk_size_gb" {
   description = "Disk size in GB for each node"
   type        = number
-  default     = 50
-  # CORRECTED: Changed from 10GB to 50GB
-  # 10GB is too small - Kubernetes system components and container images 
-  # require significant disk space. Minimum recommended is 30GB.
+  default     = 30 
 }
 
 variable "disk_type" {

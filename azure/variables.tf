@@ -90,7 +90,7 @@ variable "vm_size" {
 variable "os_disk_size_gb" {
   description = "OS disk size in GB for each node"
   type        = number
-  default     = 50
+  default     = 30
   # Minimum recommended for AKS is 30GB, default is 128GB
 }
 
