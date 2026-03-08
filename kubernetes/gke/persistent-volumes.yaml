@@ -1,67 +1,60 @@
 # =============================================================================
-# CONSUL HELM VALUES FOR GKE
+# PERSISTENT VOLUMES FOR WORDPRESS AND MYSQL
 # =============================================================================
-# Install with: helm install consul hashicorp/consul -f consul-values.yaml -n consul --create-namespace
+# This file defines the storage configuration for WordPress and MySQL.
+# 
+# GKE uses GCE Persistent Disks via the CSI driver.
+# StorageClass: premium-rwo (SSD) or standard-rwo (HDD)
+#
+# APPLY WITH: kubectl apply -f persistent-volumes.yaml
 # =============================================================================
 
-global:
-  name: consul
-  datacenter: gcp-asia-east2
-  
-  # TLS for secure communication
-  tls:
-    enabled: true
-    enableAutoEncrypt: true
-    verify: true
-  
-  # Gossip encryption
-  gossipEncryption:
-    autoGenerate: true
-  
-  # Federation for multi-datacenter
-  federation:
-    enabled: true
-    createFederationSecret: true
-  
-  # Mesh gateway for cross-cloud communication
-  meshGateway:
-    enabled: true
-    
-  # ACL for security
-  acls:
-    manageSystemACLs: true
-
-server:
-  replicas: 3
-  storage: 10Gi
-  storageClass: ssd-retain
-  
-  extraConfig: |
-    {
-      "connect": {
-        "enabled": true
-      }
-    }
-
-client:
-  enabled: true
-  grpc: true
-
-connectInject:
-  enabled: true
-  default: false  # Explicit opt-in for services
-  
-  # Transparent proxy
-  transparentProxy:
-    defaultEnabled: true
-
-controller:
-  enabled: true
-
-meshGateway:
-  enabled: true
-  replicas: 1
-  wanAddress:
-    source: Service
-  service:
-    type: LoadBalancer
+# Storage Class for SSD persistent disks (recommended for databases)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ssd-retain
+  labels:
+    app.kubernetes.io/part-of: wordpress-stack
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: pd-ssd
+  replication-type: regional-pd  # Regional replication for HA
+reclaimPolicy: Retain  # Keep data when PVC is deleted
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+---
+# Storage Class for standard disks (cost-effective for WordPress files)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: standard-retain
+  labels:
+    app.kubernetes.io/part-of: wordpress-stack
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: pd-balanced
+  replication-type: none
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+---
+# PVC for MySQL Data (will be created by StatefulSet, but defined here for reference)
+# The StatefulSet volumeClaimTemplates will create PVCs automatically
+---
+# PVC for WordPress content (uploads, themes, plugins)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wordpress-content
+  namespace: wordpress
+  labels:
+    app.kubernetes.io/name: wordpress
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce  # Can only be mounted by one node
+  storageClassName: standard-retain
+  resources:
+    requests:
+      storage: 10Gi

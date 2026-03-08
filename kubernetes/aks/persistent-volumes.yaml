@@ -1,67 +1,375 @@
 # =============================================================================
-# CONSUL HELM VALUES FOR GKE
+# PERSISTENT VOLUMES FOR WORDPRESS AND MYSQL (AKS)
 # =============================================================================
-# Install with: helm install consul hashicorp/consul -f consul-values.yaml -n consul --create-namespace
+# This file defines the storage configuration for WordPress and MySQL on AKS.
+#
+# STORAGE STRATEGY:
+#   - MySQL: Azure Disk Standard SSD (ReadWriteOnce) - for database files
+#   - WordPress: Azure Files Standard (ReadWriteMany) - for shared wp-content
+#
+# DISK TYPE: Standard SSD (StandardSSD_LRS)
+#   - Cost-effective for most workloads
+#   - Up to 6,000 IOPS, 750 MB/s throughput
+#   - Suitable for development, staging, and light production workloads
+#
+# APPLY WITH: kubectl apply -f persistent-volumes.yaml
 # =============================================================================
 
-global:
-  name: consul
-  datacenter: gcp-asia-east2
+# -----------------------------------------------------------------------------
+# StorageClass: Azure Standard SSD Disk with Retain Policy
+# -----------------------------------------------------------------------------
+# Use for: MySQL database, application data
+# Type: StandardSSD_LRS (Standard SSD, Locally Redundant Storage)
+# Access Mode: ReadWriteOnce (single node attachment)
+# Performance: Up to 6,000 IOPS, 750 MB/s throughput
+# -----------------------------------------------------------------------------
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-disk-standard-retain
+  labels:
+    app.kubernetes.io/part-of: wordpress-stack
+    storage-tier: standard
+  annotations:
+    description: "Standard SSD disk with Retain policy for persistent data"
+provisioner: disk.csi.azure.com
+parameters:
+  # Standard SSD with Local Redundancy
+  # Options:
+  #   - Standard_LRS: Standard HDD (cheapest, lowest performance)
+  #   - StandardSSD_LRS: Standard SSD (balanced cost/performance) <-- SELECTED
+  #   - Premium_LRS: Premium SSD (highest performance, highest cost)
+  #   - StandardSSD_ZRS: Standard SSD with Zone Redundancy
+  skuName: StandardSSD_LRS
   
-  # TLS for secure communication
-  tls:
-    enabled: true
-    enableAutoEncrypt: true
-    verify: true
+  # Managed disk (recommended)
+  kind: Managed
   
-  # Gossip encryption
-  gossipEncryption:
-    autoGenerate: true
+  # Caching mode for better read performance
+  # Options: None, ReadOnly, ReadWrite
+  # ReadOnly is recommended for database workloads
+  cachingMode: ReadOnly
   
-  # Federation for multi-datacenter
-  federation:
-    enabled: true
-    createFederationSecret: true
+  # Disk encryption with platform-managed keys (default)
+  # For customer-managed keys, uncomment and set:
+  # diskEncryptionSetID: /subscriptions/<sub-id>/resourceGroups/<rg>/providers/Microsoft.Compute/diskEncryptionSets/<des-name>
   
-  # Mesh gateway for cross-cloud communication
-  meshGateway:
-    enabled: true
+  # Network access policy
+  networkAccessPolicy: AllowAll
+  
+  # Allow public network access
+  publicNetworkAccess: Enabled
+
+# Retain: Keep the disk when PVC is deleted (IMPORTANT for data safety)
+# Delete: Disk is deleted when PVC is deleted (use for dev/test only)
+reclaimPolicy: Retain
+
+# Allow expanding the disk without recreating PVC
+allowVolumeExpansion: true
+
+# WaitForFirstConsumer: Create disk in the same zone as the pod
+# Immediate: Create disk immediately (may cause zone mismatch)
+volumeBindingMode: WaitForFirstConsumer
+
+# Mount options
+mountOptions:
+  - noatime    # Don't update access time (improves performance)
+  - nodiratime # Don't update directory access time
+
+---
+# -----------------------------------------------------------------------------
+# StorageClass: Azure Standard SSD Disk with Delete Policy
+# -----------------------------------------------------------------------------
+# Use for: Development, testing, temporary data
+# WARNING: Data is DELETED when PVC is deleted!
+# -----------------------------------------------------------------------------
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-disk-standard-delete
+  labels:
+    app.kubernetes.io/part-of: wordpress-stack
+    storage-tier: standard
+    lifecycle: ephemeral
+  annotations:
+    description: "Standard SSD disk with Delete policy for temporary data"
+provisioner: disk.csi.azure.com
+parameters:
+  skuName: StandardSSD_LRS
+  kind: Managed
+  cachingMode: ReadOnly
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+
+---
+# -----------------------------------------------------------------------------
+# StorageClass: Azure Standard Files with Retain Policy
+# -----------------------------------------------------------------------------
+# Use for: WordPress wp-content (shared across multiple pods)
+# Type: Standard_LRS (Standard Files, Locally Redundant)
+# Access Mode: ReadWriteMany (multiple pods can mount simultaneously)
+# Features: SMB 3.0 protocol, suitable for shared content
+# -----------------------------------------------------------------------------
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: azure-files-standard-retain
+  labels:
+    app.kubernetes.io/part-of: wordpress-stack
+    storage-tier: standard
+  annotations:
+    description: "Standard Azure Files with Retain policy for shared storage"
+provisioner: file.csi.azure.com
+parameters:
+  # Standard Files with Local Redundancy
+  # Options:
+  #   - Standard_LRS: Standard, locally redundant <-- SELECTED
+  #   - Standard_GRS: Standard, geo-redundant
+  #   - Standard_ZRS: Standard, zone-redundant
+  #   - Premium_LRS: Premium, locally redundant
+  skuName: Standard_LRS
+  
+  # Protocol: SMB (default) or NFS
+  # SMB is more compatible, NFS requires Premium tier
+  protocol: smb
+
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+
+# Immediate: Azure Files can be created without waiting for pod
+volumeBindingMode: Immediate
+
+# Mount options for WordPress (www-data user)
+mountOptions:
+  - dir_mode=0777      # Directory permissions
+  - file_mode=0777     # File permissions
+  - uid=33             # www-data user ID in container
+  - gid=33             # www-data group ID in container
+  - mfsymlinks         # Enable symbolic links (required for some plugins)
+  - cache=strict       # Strict caching for data consistency
+  - actimeo=30         # Attribute cache timeout in seconds
+  - nosharesock        # Don't share socket (improves stability)
+
+---
+# =============================================================================
+# PERSISTENT VOLUME CLAIMS
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# PVC: WordPress Content (wp-content directory)
+# -----------------------------------------------------------------------------
+# Stores:
+#   - /wp-content/uploads/ - Media files (images, videos, documents)
+#   - /wp-content/themes/  - WordPress themes
+#   - /wp-content/plugins/ - WordPress plugins
+#   - /wp-content/cache/   - Cache files (if using caching plugins)
+#
+# Access Mode: ReadWriteMany (RWX)
+#   - Required for horizontal scaling (multiple WordPress pods)
+#   - Uses Azure Files (SMB) for shared access
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wordpress-content
+  namespace: wordpress
+  labels:
+    app.kubernetes.io/name: wordpress
+    app.kubernetes.io/component: content-storage
+    app.kubernetes.io/part-of: wordpress-stack
+  annotations:
+    description: "Shared storage for WordPress uploads, themes, and plugins"
+    volume.kubernetes.io/storage-provisioner: file.csi.azure.com
+spec:
+  accessModes:
+    - ReadWriteMany  # Multiple pods can read/write simultaneously
+  storageClassName: azure-files-standard-retain
+  resources:
+    requests:
+      storage: 10Gi  # Starting size - can be expanded later
+    # Uncomment to set a limit (requires quota enforcement)
+    # limits:
+    #   storage: 50Gi
+
+---
+# -----------------------------------------------------------------------------
+# PVC: WordPress Backup Storage (Optional)
+# -----------------------------------------------------------------------------
+# Use for:
+#   - Database backups (mysqldump files)
+#   - File backups (wp-content archives)
+#   - Migration data
+#
+# Mount this in a backup CronJob or sidecar container
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wordpress-backup
+  namespace: wordpress
+  labels:
+    app.kubernetes.io/name: wordpress
+    app.kubernetes.io/component: backup-storage
+    app.kubernetes.io/part-of: wordpress-stack
+  annotations:
+    description: "Storage for WordPress and MySQL backups"
+spec:
+  accessModes:
+    - ReadWriteMany  # Allow backup jobs from multiple pods
+  storageClassName: azure-files-standard-retain
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# -----------------------------------------------------------------------------
+# PVC: MySQL Data (Reference - Created by StatefulSet)
+# -----------------------------------------------------------------------------
+# NOTE: This PVC is automatically created by the MySQL StatefulSet's
+# volumeClaimTemplates section. This definition shows what will be created.
+#
+# The StatefulSet creates PVCs named: mysql-data-mysql-0, mysql-data-mysql-1, etc.
+#
+# If you need to pre-create the PVC (e.g., for data migration), uncomment below:
+# -----------------------------------------------------------------------------
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: mysql-data-mysql-0
+#   namespace: wordpress
+#   labels:
+#     app.kubernetes.io/name: mysql
+#     app.kubernetes.io/component: database-storage
+#     app.kubernetes.io/part-of: wordpress-stack
+# spec:
+#   accessModes:
+#     - ReadWriteOnce  # Database requires exclusive access
+#   storageClassName: azure-disk-standard-retain
+#   resources:
+#     requests:
+#       storage: 10Gi
+
+---
+# =============================================================================
+# VOLUME SNAPSHOT CLASS (For Backup and Recovery)
+# =============================================================================
+# Enables point-in-time snapshots of Azure Disks
+# Useful for:
+#   - Database backups before upgrades
+#   - Disaster recovery
+#   - Creating test environments from production data
+#
+# Prerequisites:
+#   - CSI snapshot controller must be installed
+#   - AKS 1.21+ has this enabled by default
+# -----------------------------------------------------------------------------
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: azure-disk-snapshot-class
+  labels:
+    app.kubernetes.io/part-of: wordpress-stack
+  annotations:
+    description: "Snapshot class for Azure Managed Disks"
+driver: disk.csi.azure.com
+deletionPolicy: Retain  # Keep snapshots when VolumeSnapshot is deleted
+parameters:
+  # Use incremental snapshots (faster and cheaper)
+  incremental: "true"
+  
+  # Optional: Resource group for snapshots (defaults to node resource group)
+  # resourceGroup: my-snapshot-rg
+  
+  # Optional: Tags for the snapshot
+  # tags: "environment=production,application=wordpress"
+
+---
+# =============================================================================
+# STORAGE RESOURCE QUOTA (Limit Storage Usage)
+# =============================================================================
+# Prevents excessive storage consumption in the wordpress namespace
+# Adjust limits based on your requirements and budget
+# -----------------------------------------------------------------------------
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: wordpress-storage-quota
+  namespace: wordpress
+  labels:
+    app.kubernetes.io/part-of: wordpress-stack
+  annotations:
+    description: "Limits storage resource usage in wordpress namespace"
+spec:
+  hard:
+    # Total storage that can be requested across all PVCs
+    requests.storage: 100Gi
     
-  # ACL for security
-  acls:
-    manageSystemACLs: true
+    # Maximum number of PVCs in this namespace
+    persistentvolumeclaims: "10"
+    
+    # Limits per storage class
+    azure-disk-standard-retain.storageclass.storage.k8s.io/requests.storage: 50Gi
+    azure-disk-standard-retain.storageclass.storage.k8s.io/persistentvolumeclaims: "5"
+    
+    azure-files-standard-retain.storageclass.storage.k8s.io/requests.storage: 50Gi
+    azure-files-standard-retain.storageclass.storage.k8s.io/persistentvolumeclaims: "5"
 
-server:
-  replicas: 3
-  storage: 10Gi
-  storageClass: ssd-retain
-  
-  extraConfig: |
-    {
-      "connect": {
-        "enabled": true
-      }
-    }
+---
+# =============================================================================
+# EXAMPLE: VOLUME SNAPSHOT FOR MYSQL BACKUP
+# =============================================================================
+# Uncomment and apply to create a snapshot of MySQL data
+# 
+# Usage:
+#   1. Uncomment the VolumeSnapshot below
+#   2. Update the name with current date
+#   3. Apply: kubectl apply -f persistent-volumes.yaml
+#   4. Verify: kubectl get volumesnapshot -n wordpress
+# -----------------------------------------------------------------------------
+# apiVersion: snapshot.storage.k8s.io/v1
+# kind: VolumeSnapshot
+# metadata:
+#   name: mysql-snapshot-20240115
+#   namespace: wordpress
+#   labels:
+#     app.kubernetes.io/name: mysql
+#     app.kubernetes.io/component: backup
+#     backup-type: scheduled
+# spec:
+#   volumeSnapshotClassName: azure-disk-snapshot-class
+#   source:
+#     persistentVolumeClaimName: mysql-data-mysql-0
 
-client:
-  enabled: true
-  grpc: true
-
-connectInject:
-  enabled: true
-  default: false  # Explicit opt-in for services
-  
-  # Transparent proxy
-  transparentProxy:
-    defaultEnabled: true
-
-controller:
-  enabled: true
-
-meshGateway:
-  enabled: true
-  replicas: 1
-  wanAddress:
-    source: Service
-  service:
-    type: LoadBalancer
+---
+# =============================================================================
+# EXAMPLE: RESTORE PVC FROM SNAPSHOT
+# =============================================================================
+# Uncomment and apply to restore data from a snapshot
+#
+# Usage:
+#   1. Uncomment the PVC below
+#   2. Update the snapshot name to match your backup
+#   3. Apply: kubectl apply -f persistent-volumes.yaml
+#   4. Update MySQL StatefulSet to use the restored PVC
+# -----------------------------------------------------------------------------
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: mysql-data-restored
+#   namespace: wordpress
+#   labels:
+#     app.kubernetes.io/name: mysql
+#     app.kubernetes.io/component: database-storage
+#     restored-from: snapshot
+# spec:
+#   storageClassName: azure-disk-standard-retain
+#   dataSource:
+#     name: mysql-snapshot-20240115  # Name of the VolumeSnapshot
+#     kind: VolumeSnapshot
+#     apiGroup: snapshot.storage.k8s.io
+#   accessModes:
+#     - ReadWriteOnce
+#   resources:
+#     requests:
+#       storage: 10Gi  # Must be >= original PVC size

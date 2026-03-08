@@ -1,67 +1,96 @@
 # =============================================================================
-# CONSUL HELM VALUES FOR GKE
+# AZURE APPLICATION GATEWAY INGRESS
 # =============================================================================
-# Install with: helm install consul hashicorp/consul -f consul-values.yaml -n consul --create-namespace
+# This configures the Application Gateway Ingress Controller (AGIC)
+# for AKS with Azure managed certificates.
+#
+# AGIC is already deployed via Terraform with the AKS cluster.
 # =============================================================================
 
-global:
-  name: consul
-  datacenter: gcp-asia-east2
-  
-  # TLS for secure communication
-  tls:
-    enabled: true
-    enableAutoEncrypt: true
-    verify: true
-  
-  # Gossip encryption
-  gossipEncryption:
-    autoGenerate: true
-  
-  # Federation for multi-datacenter
-  federation:
-    enabled: true
-    createFederationSecret: true
-  
-  # Mesh gateway for cross-cloud communication
-  meshGateway:
-    enabled: true
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wordpress-ingress
+  namespace: wordpress
+  labels:
+    app.kubernetes.io/name: wordpress
+  annotations:
+    # Use Azure Application Gateway Ingress Controller
+    kubernetes.io/ingress.class: azure/application-gateway
     
-  # ACL for security
-  acls:
-    manageSystemACLs: true
-
-server:
-  replicas: 3
-  storage: 10Gi
-  storageClass: ssd-retain
+    # Backend protocol
+    appgw.ingress.kubernetes.io/backend-protocol: "http"
+    
+    # Health probe configuration
+    appgw.ingress.kubernetes.io/health-probe-path: "/wp-admin/install.php"
+    appgw.ingress.kubernetes.io/health-probe-interval: "30"
+    appgw.ingress.kubernetes.io/health-probe-timeout: "30"
+    
+    # Connection draining
+    appgw.ingress.kubernetes.io/connection-draining: "true"
+    appgw.ingress.kubernetes.io/connection-draining-timeout: "60"
+    
+    # Request timeout
+    appgw.ingress.kubernetes.io/request-timeout: "60"
+    
+    # SSL redirect
+    appgw.ingress.kubernetes.io/ssl-redirect: "true"
+    
+    # Cookie-based affinity (optional)
+    appgw.ingress.kubernetes.io/cookie-based-affinity: "true"
+    
+    # WAF mode (if using WAF_v2 SKU)
+    # appgw.ingress.kubernetes.io/waf-policy-for-path: "/subscriptions/.../wafPolicies/wordpress-waf"
+spec:
+  # TLS configuration with Azure Key Vault certificate
+  tls:
+    - hosts:
+        - wordpress-azure.example.com  # REPLACE with your domain
+      secretName: wordpress-tls-secret  # Secret from Key Vault or manually created
   
-  extraConfig: |
-    {
-      "connect": {
-        "enabled": true
-      }
-    }
-
-client:
-  enabled: true
-  grpc: true
-
-connectInject:
-  enabled: true
-  default: false  # Explicit opt-in for services
-  
-  # Transparent proxy
-  transparentProxy:
-    defaultEnabled: true
-
-controller:
-  enabled: true
-
-meshGateway:
-  enabled: true
-  replicas: 1
-  wanAddress:
-    source: Service
-  service:
-    type: LoadBalancer
+  rules:
+    - host: wordpress-azure.example.com  # REPLACE with your domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: wordpress
+                port:
+                  number: 80
+---
+# Secret for TLS certificate (if not using Key Vault)
+# Generate with: kubectl create secret tls wordpress-tls-secret --cert=cert.pem --key=key.pem -n wordpress
+# Or use cert-manager for automatic certificate management
+---
+# Azure Key Vault certificate (recommended)
+# This requires Azure Key Vault Provider for Secrets Store CSI Driver
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: azure-tls-certificate
+  namespace: wordpress
+spec:
+  provider: azure
+  secretObjects:
+    - secretName: wordpress-tls-secret
+      type: kubernetes.io/tls
+      data:
+        - objectName: wordpress-tls-cert
+          key: tls.crt
+        - objectName: wordpress-tls-key
+          key: tls.key
+  parameters:
+    usePodIdentity: "false"
+    useVMManagedIdentity: "true"
+    keyvaultName: "wordpress-kv"  # REPLACE
+    objects: |
+      array:
+        - |
+          objectName: wordpress-tls-cert
+          objectType: secret
+        - |
+          objectName: wordpress-tls-key
+          objectType: secret
+    tenantId: ""  # REPLACE

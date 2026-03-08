@@ -1,0 +1,49 @@
+# =============================================================================
+# CLUSTER AUTOSCALER CONFIGURATION (AKS)
+# =============================================================================
+# AKS Cluster Autoscaler is enabled at the Terraform level.
+#
+# AUTOSCALER LIMITS (from Terraform):
+#   - VM Size: Standard_D2as_v4 (2 vCPU, 8GB RAM)
+#   - Min nodes: 1
+#   - Max nodes: 2
+#   - Availability Zones: 1, 3
+# =============================================================================
+
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: wordpress-critical
+globalDefault: false
+value: 1000000
+description: "Critical WordPress components"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: wordpress-normal
+globalDefault: false
+value: 100000
+description: "Normal WordPress pods"
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mysql-pdb
+  namespace: wordpress
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mysql
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: wordpress-pdb
+  namespace: wordpress
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wordpress

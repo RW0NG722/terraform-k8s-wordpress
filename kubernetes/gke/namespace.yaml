@@ -1,0 +1,50 @@
+# =============================================================================
+# KUBERNETES NAMESPACE FOR WORDPRESS
+# =============================================================================
+# This creates an isolated namespace for the WordPress application.
+# All WordPress-related resources will be deployed here.
+#
+# APPLY WITH: kubectl apply -f namespace.yaml
+# =============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wordpress
+  labels:
+    app.kubernetes.io/name: wordpress
+    app.kubernetes.io/part-of: wordpress-stack
+    environment: production
+  annotations:
+    description: "Namespace for WordPress application and MySQL database"
+---
+# Resource Quota to limit resource usage in this namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: wordpress-quota
+  namespace: wordpress
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: "8Gi"
+    limits.cpu: "8"
+    limits.memory: "16Gi"
+    persistentvolumeclaims: "10"
+    pods: "20"
+---
+# Limit Range to set default resource limits
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: wordpress-limits
+  namespace: wordpress
+spec:
+  limits:
+    - default:
+        cpu: "500m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+      type: Container

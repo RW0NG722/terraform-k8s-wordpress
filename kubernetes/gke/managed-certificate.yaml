@@ -1,67 +1,41 @@
 # =============================================================================
-# CONSUL HELM VALUES FOR GKE
+# GKE MANAGED CERTIFICATE
 # =============================================================================
-# Install with: helm install consul hashicorp/consul -f consul-values.yaml -n consul --create-namespace
+# Google-managed SSL certificate for HTTPS.
+# This automatically provisions and renews the certificate.
+#
+# PREREQUISITES:
+#   1. Domain must point to the Ingress IP
+#   2. DNS propagation must be complete
+#
+# APPLY WITH: kubectl apply -f managed-certificate.yaml
 # =============================================================================
 
-global:
-  name: consul
-  datacenter: gcp-asia-east2
-  
-  # TLS for secure communication
-  tls:
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: wordpress-certificate
+  namespace: wordpress
+  labels:
+    app.kubernetes.io/name: wordpress
+    app.kubernetes.io/component: certificate
+spec:
+  domains:
+    - wordpress.example.com  # REPLACE with your domain
+    # Add more domains if needed:
+    # - www.wordpress.example.com
+---
+# FrontendConfig for HTTP to HTTPS redirect
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: wordpress-frontend-config
+  namespace: wordpress
+spec:
+  # Redirect HTTP to HTTPS
+  redirectToHttps:
     enabled: true
-    enableAutoEncrypt: true
-    verify: true
+    responseCodeName: MOVED_PERMANENTLY_DEFAULT  # 301 redirect
   
-  # Gossip encryption
-  gossipEncryption:
-    autoGenerate: true
-  
-  # Federation for multi-datacenter
-  federation:
-    enabled: true
-    createFederationSecret: true
-  
-  # Mesh gateway for cross-cloud communication
-  meshGateway:
-    enabled: true
-    
-  # ACL for security
-  acls:
-    manageSystemACLs: true
-
-server:
-  replicas: 3
-  storage: 10Gi
-  storageClass: ssd-retain
-  
-  extraConfig: |
-    {
-      "connect": {
-        "enabled": true
-      }
-    }
-
-client:
-  enabled: true
-  grpc: true
-
-connectInject:
-  enabled: true
-  default: false  # Explicit opt-in for services
-  
-  # Transparent proxy
-  transparentProxy:
-    defaultEnabled: true
-
-controller:
-  enabled: true
-
-meshGateway:
-  enabled: true
-  replicas: 1
-  wanAddress:
-    source: Service
-  service:
-    type: LoadBalancer
+  # SSL Policy (optional - for stricter SSL settings)
+  # sslPolicy: gke-ingress-ssl-policy

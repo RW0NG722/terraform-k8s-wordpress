@@ -1,0 +1,59 @@
+# =============================================================================
+# AZURE MONITOR / APPLICATION INSIGHTS LOGGING
+# =============================================================================
+# AKS with Azure Monitor integration (enabled in Terraform) automatically
+# sends logs to Log Analytics Workspace.
+#
+# LOGS ARE AVAILABLE IN:
+#   - Azure Portal → Log Analytics Workspace → Logs
+#   - Azure Portal → AKS Cluster → Insights
+#   
+# SAMPLE QUERIES:
+#   - Container logs: ContainerLog | where LogEntry contains "error"
+#   - Pod inventory: KubePodInventory | where Namespace == "wordpress"
+# =============================================================================
+
+# ConfigMap for custom log collection
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: container-azm-ms-agentconfig
+  namespace: kube-system
+data:
+  schema-version: v1
+  config-version: v1
+  log-data-collection-settings: |
+    [log_collection_settings]
+       [log_collection_settings.stdout]
+          enabled = true
+          exclude_namespaces = ["kube-system","gatekeeper-system"]
+       [log_collection_settings.stderr]
+          enabled = true
+          exclude_namespaces = ["kube-system","gatekeeper-system"]
+       [log_collection_settings.env_var]
+          enabled = true
+  prometheus-data-collection-settings: |
+    [prometheus_data_collection_settings.cluster]
+       interval = "1m"
+       namespace_filter_for_scraping = ["wordpress"]
+       monitor_kubernetes_pods = true
+       monitor_kubernetes_pods_namespaces = ["wordpress"]
+  metric-collection-settings: |
+    [metric_collection_settings]
+       interval = "60s"
+       namespace_filter_for_scraping = ["wordpress"]
+  alertable-metrics-configuration-settings: |
+    [alertable_metrics_configuration_settings.container_resource_utilization_thresholds]
+       container_cpu_threshold = 80
+       container_memory_threshold = 80
+---
+# Application Insights integration (for distributed tracing)
+# This requires instrumenting your application with Application Insights SDK
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-insights-config
+  namespace: wordpress
+data:
+  APPLICATIONINSIGHTS_CONNECTION_STRING: ""  # REPLACE with your connection string
+  APPLICATIONINSIGHTS_ROLE_NAME: "wordpress"

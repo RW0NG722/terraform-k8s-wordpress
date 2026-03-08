@@ -1,0 +1,80 @@
+# =============================================================================
+# LOGGING CONFIGURATION FOR GKE (CLOUD LOGGING / STACKDRIVER)
+# =============================================================================
+# GKE automatically sends logs to Cloud Logging when enabled at cluster level.
+# This file provides additional configuration for structured logging.
+#
+# LOGS ARE AVAILABLE IN:
+#   - Google Cloud Console → Logging → Logs Explorer
+#   - Use filter: resource.type="k8s_container" resource.labels.cluster_name="wordpress-gke-cluster"
+#
+# WHAT'S LOGGED:
+#   - Container stdout/stderr (application logs)
+#   - Kubernetes events
+#   - Audit logs (who did what)
+#   - System component logs
+# =============================================================================
+
+# ConfigMap for logging configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wordpress-logging-config
+  namespace: wordpress
+  labels:
+    app.kubernetes.io/name: wordpress
+data:
+  # Fluent Bit configuration for custom log parsing
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush         1
+        Log_Level     info
+        Daemon        off
+        Parsers_File  parsers.conf
+
+    [INPUT]
+        Name              tail
+        Path              /var/log/containers/wordpress-*.log
+        Parser            docker
+        Tag               wordpress.*
+        Refresh_Interval  5
+
+    [FILTER]
+        Name          parser
+        Match         wordpress.*
+        Key_Name      log
+        Parser        apache
+        Reserve_Data  On
+
+    [OUTPUT]
+        Name          stackdriver
+        Match         *
+        Resource      k8s_container
+        k8s_cluster_name    wordpress-gke-cluster
+        k8s_cluster_location    asia-east2
+
+  parsers.conf: |
+    [PARSER]
+        Name   apache
+        Format regex
+        Regex  ^(?<remote_addr>[^ ]*) - (?<remote_user>[^ ]*) \[(?<time>[^\]]*)\] "(?<method>\S+)(?: +(?<path>[^\"]*?)(?: +\S*)?)?" (?<status>[^ ]*) (?<size>[^ ]*)(?: "(?<referer>[^\"]*)" "(?<agent>[^\"]*)")?$
+        Time_Key time
+        Time_Format %d/%b/%Y:%H:%M:%S %z
+
+    [PARSER]
+        Name   docker
+        Format json
+        Time_Key time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep On
+---
+# LoggingConfig CRD (if using custom logging)
+# This requires the logging operator to be installed
+# apiVersion: logging.cnrm.cloud.google.com/v1beta1
+# kind: LoggingLogSink
+# metadata:
+#   name: wordpress-log-sink
+#   namespace: wordpress
+# spec:
+#   destination: "storage.googleapis.com/wordpress-logs-bucket"
+#   filter: 'resource.type="k8s_container" resource.labels.namespace_name="wordpress"'

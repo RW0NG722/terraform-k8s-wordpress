@@ -1,67 +1,101 @@
 # =============================================================================
-# CONSUL HELM VALUES FOR GKE
+# GKE INGRESS WITH GOOGLE CLOUD LOAD BALANCER
 # =============================================================================
-# Install with: helm install consul hashicorp/consul -f consul-values.yaml -n consul --create-namespace
+# This creates an external HTTPS Load Balancer using GKE Ingress.
+# It uses:
+#   - Google-managed SSL certificate
+#   - Cloud CDN (optional)
+#   - Cloud Armor (optional, for WAF)
+#
+# APPLY WITH: kubectl apply -f ingress.yaml
 # =============================================================================
 
-global:
-  name: consul
-  datacenter: gcp-asia-east2
-  
-  # TLS for secure communication
-  tls:
-    enabled: true
-    enableAutoEncrypt: true
-    verify: true
-  
-  # Gossip encryption
-  gossipEncryption:
-    autoGenerate: true
-  
-  # Federation for multi-datacenter
-  federation:
-    enabled: true
-    createFederationSecret: true
-  
-  # Mesh gateway for cross-cloud communication
-  meshGateway:
-    enabled: true
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wordpress-ingress
+  namespace: wordpress
+  labels:
+    app.kubernetes.io/name: wordpress
+    app.kubernetes.io/component: ingress
+  annotations:
+    # Use GKE Ingress controller
+    kubernetes.io/ingress.class: "gce"
     
-  # ACL for security
-  acls:
-    manageSystemACLs: true
-
-server:
-  replicas: 3
-  storage: 10Gi
-  storageClass: ssd-retain
+    # Link to the managed certificate
+    networking.gke.io/managed-certificates: "wordpress-certificate"
+    
+    # Link to frontend config (HTTP->HTTPS redirect)
+    networking.gke.io/v1beta1.FrontendConfig: "wordpress-frontend-config"
+    
+    # Static IP address (created by Terraform)
+    kubernetes.io/ingress.global-static-ip-name: "wordpress-gke-cluster-ingress-ip"
+    
+    # Enable Cloud CDN (optional)
+    # cloud.google.com/backend-config: '{"default": "wordpress-backend-config"}'
+    
+    # Health check configuration
+    # cloud.google.com/neg: '{"ingress": true}'
+spec:
+  # Default backend
+  defaultBackend:
+    service:
+      name: wordpress
+      port:
+        number: 80
   
-  extraConfig: |
-    {
-      "connect": {
-        "enabled": true
-      }
-    }
-
-client:
-  enabled: true
-  grpc: true
-
-connectInject:
-  enabled: true
-  default: false  # Explicit opt-in for services
+  # TLS configuration (managed certificate handles this)
+  # tls:
+  #   - hosts:
+  #       - wordpress.example.com
+  #     secretName: wordpress-tls  # Only if using self-managed certs
   
-  # Transparent proxy
-  transparentProxy:
-    defaultEnabled: true
-
-controller:
-  enabled: true
-
-meshGateway:
-  enabled: true
-  replicas: 1
-  wanAddress:
-    source: Service
-  service:
-    type: LoadBalancer
+  rules:
+    - host: wordpress.example.com  # REPLACE with your domain
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: wordpress
+                port:
+                  number: 80
+---
+# Backend Config for Cloud CDN and timeout settings (optional)
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: wordpress-backend-config
+  namespace: wordpress
+spec:
+  # Timeout settings
+  timeoutSec: 30
+  connectionDraining:
+    drainingTimeoutSec: 60
+  
+  # Cloud CDN configuration
+  cdn:
+    enabled: true
+    cachePolicy:
+      includeHost: true
+      includeProtocol: true
+      includeQueryString: false
+  
+  # Session affinity (optional)
+  sessionAffinity:
+    affinityType: "CLIENT_IP"
+  
+  # Health check configuration
+  healthCheck:
+    type: HTTP
+    port: 80
+    requestPath: /wp-admin/install.php
+    checkIntervalSec: 15
+    timeoutSec: 5
+    healthyThreshold: 1
+    unhealthyThreshold: 2
+  
+  # Cloud Armor security policy (create separately)
+  # securityPolicy:
+  #   name: "wordpress-security-policy"

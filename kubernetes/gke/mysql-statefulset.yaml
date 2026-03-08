@@ -1,30 +1,222 @@
 # =============================================================================
-# CONSUL MESH GATEWAY SERVICE CONFIGURATION
+# MYSQL STATEFULSET FOR WORDPRESS
 # =============================================================================
-apiVersion: consul.hashicorp.com/v1alpha1
-kind: ProxyDefaults
+# This deploys MySQL as a StatefulSet, which is essential for:
+#   - Stable network identity (mysql-0, mysql-1, etc.)
+#   - Stable persistent storage
+#   - Ordered deployment and scaling
+#
+# Reference: https://kubernetes.io/docs/tutorials/stateful-application/mysql-wordpress-persistent-volume/
+#
+# APPLY WITH: kubectl apply -f mysql-statefulset.yaml
+# =============================================================================
+
+# Headless Service for StatefulSet DNS resolution
+apiVersion: v1
+kind: Service
 metadata:
-  name: global
-spec:
-  meshGateway:
-    mode: local
----
-apiVersion: consul.hashicorp.com/v1alpha1
-kind: ServiceDefaults
-metadata:
-  name: wordpress
+  name: mysql-headless
   namespace: wordpress
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/component: database
 spec:
-  protocol: http
-  meshGateway:
-    mode: local
+  ports:
+    - port: 3306
+      name: mysql
+  clusterIP: None  # Headless service
+  selector:
+    app.kubernetes.io/name: mysql
 ---
-apiVersion: consul.hashicorp.com/v1alpha1
-kind: ServiceDefaults
+# Regular Service for WordPress to connect
+apiVersion: v1
+kind: Service
 metadata:
   name: mysql
   namespace: wordpress
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/component: database
 spec:
-  protocol: tcp
-  meshGateway:
-    mode: local
+  ports:
+    - port: 3306
+      targetPort: 3306
+  selector:
+    app.kubernetes.io/name: mysql
+---
+# ConfigMap for MySQL configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-config
+  namespace: wordpress
+  labels:
+    app.kubernetes.io/name: mysql
+data:
+  my.cnf: |
+    [mysqld]
+    # Character set and collation
+    character-set-server=utf8mb4
+    collation-server=utf8mb4_unicode_ci
+    
+    # InnoDB settings
+    innodb_buffer_pool_size=256M
+    innodb_log_file_size=64M
+    innodb_flush_log_at_trx_commit=2
+    
+    # Connection settings
+    max_connections=200
+    wait_timeout=600
+    interactive_timeout=600
+    
+    # Query cache (deprecated in MySQL 8, but useful for older versions)
+    # query_cache_type=1
+    # query_cache_size=32M
+    
+    # Logging for debugging (disable in production for performance)
+    # general_log=1
+    # general_log_file=/var/log/mysql/general.log
+    
+    # Slow query log
+    slow_query_log=1
+    slow_query_log_file=/var/log/mysql/slow.log
+    long_query_time=2
+    
+    [client]
+    default-character-set=utf8mb4
+---
+# MySQL StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: wordpress
+  labels:
+    app.kubernetes.io/name: mysql
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: wordpress-stack
+spec:
+  serviceName: mysql-headless
+  replicas: 1  # Single instance for simplicity; increase for replication
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mysql
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mysql
+        app.kubernetes.io/component: database
+      annotations:
+        # Prometheus metrics (if using Prometheus)
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9104"
+    spec:
+      # Security context for the pod
+      securityContext:
+        fsGroup: 999  # MySQL group
+      
+      # Ensure pods are scheduled on different nodes for HA
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - mysql
+                topologyKey: kubernetes.io/hostname
+      
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          ports:
+            - containerPort: 3306
+              name: mysql
+          
+          # Environment variables from secrets
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secrets
+                  key: mysql-root-password
+            - name: MYSQL_DATABASE
+              value: wordpress
+            - name: MYSQL_USER
+              value: wordpress
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secrets
+                  key: mysql-password
+          
+          # Resource limits and requests
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          
+          # Volume mounts
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+            - name: mysql-config
+              mountPath: /etc/mysql/conf.d
+              readOnly: true
+          
+          # Liveness probe - checks if MySQL is alive
+          livenessProbe:
+            exec:
+              command:
+                - mysqladmin
+                - ping
+                - -h
+                - localhost
+                - -u
+                - root
+                - -p${MYSQL_ROOT_PASSWORD}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          # Readiness probe - checks if MySQL is ready to accept connections
+          readinessProbe:
+            exec:
+              command:
+                - mysql
+                - -h
+                - localhost
+                - -u
+                - root
+                - -p${MYSQL_ROOT_PASSWORD}
+                - -e
+                - "SELECT 1"
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+      
+      volumes:
+        - name: mysql-config
+          configMap:
+            name: mysql-config
+  
+  # Volume claim template for persistent storage
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-data
+        labels:
+          app.kubernetes.io/name: mysql
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: ssd-retain  # Use SSD for database
+        resources:
+          requests:
+            storage: 10Gi

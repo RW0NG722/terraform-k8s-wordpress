@@ -1,0 +1,90 @@
+# =============================================================================
+# CLUSTER AUTOSCALER CONFIGURATION
+# =============================================================================
+# GKE Cluster Autoscaler is enabled at the Terraform level.
+# This file documents the configuration and provides pod priority classes
+# for influencing autoscaling behavior.
+#
+# HOW IT WORKS:
+#   1. When pods are pending due to insufficient resources, CA adds nodes
+#   2. When nodes are underutilized, CA removes them
+#   3. CA respects min/max node counts set in Terraform
+#
+# AUTOSCALER LIMITS (from Terraform):
+#   - Max CPU per instance: 4 cores
+#   - Max RAM per instance: 8GB
+#   - Min nodes per zone: 1
+#   - Max nodes per zone: 2
+#   - Total min nodes: 2 (1 per zone × 2 zones)
+#   - Total max nodes: 4 (2 per zone × 2 zones)
+# =============================================================================
+
+# Priority Class for critical system pods (won't be evicted)
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: wordpress-critical
+globalDefault: false
+value: 1000000
+description: "Critical WordPress components that should not be evicted"
+---
+# Priority Class for normal WordPress pods
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: wordpress-normal
+globalDefault: false
+value: 100000
+description: "Normal WordPress pods"
+---
+# Pod Disruption Budget for MySQL (ensure availability during scaling)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mysql-pdb
+  namespace: wordpress
+  labels:
+    app.kubernetes.io/name: mysql
+spec:
+  minAvailable: 1  # At least 1 MySQL pod must be available
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mysql
+---
+# Pod Disruption Budget for WordPress
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: wordpress-pdb
+  namespace: wordpress
+  labels:
+    app.kubernetes.io/name: wordpress
+spec:
+  minAvailable: 1  # At least 1 WordPress pod must be available
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wordpress
+---
+# Vertical Pod Autoscaler (optional - auto-adjusts resource requests)
+# Requires VPA to be installed in the cluster
+# apiVersion: autoscaling.k8s.io/v1
+# kind: VerticalPodAutoscaler
+# metadata:
+#   name: wordpress-vpa
+#   namespace: wordpress
+# spec:
+#   targetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: wordpress
+#   updatePolicy:
+#     updateMode: "Auto"  # Auto, Off, or Initial
+#   resourcePolicy:
+#     containerPolicies:
+#       - containerName: wordpress
+#         minAllowed:
+#           cpu: "100m"
+#           memory: "256Mi"
+#         maxAllowed:
+#           cpu: "2"
+#           memory: "4Gi"
